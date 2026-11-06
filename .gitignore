@@ -1,0 +1,82 @@
+﻿# =============================================================================
+# .gitignore — Poltergeist Debugger (Swift / Xcode / iOS)
+# =============================================================================
+# Kiro spec files (.kiro/) are intentionally NOT ignored so hackathon judges
+# can verify the spec-driven development process (requirements, design, tasks).
+# =============================================================================
+
+# ── Xcode build artefacts ────────────────────────────────────────────────────
+build/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+
+# ── Swift Package Manager ────────────────────────────────────────────────────
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# ── CocoaPods (not used here, but guard against accidental addition) ─────────
+Pods/
+Podfile.lock
+
+# ── macOS filesystem noise ───────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# ── Xcode Playground ────────────────────────────────────────────────────────
+timeline.xctimeline
+playground.xcworkspace
+
+# ── Simulator / device crash logs ───────────────────────────────────────────
+*.crash
+
+# ── Archives & exports ───────────────────────────────────────────────────────
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# ── Test results ─────────────────────────────────────────────────────────────
+*.xcresult
+
+# ── Secrets / signing (never commit provisioning profiles or p12s) ───────────
+*.p12
+*.mobileprovision
+*.provisionprofile
+
+# ── Editor / OS scratch files ────────────────────────────────────────────────
+*.swp
+*.swo
+*~
+Thumbs.db
+
+# ── Node / npm (CI tooling only, not part of the Xcode project) ─────────────
+node_modules/
+npm-debug.log*
+
+# =============================================================================
+# NOT ignored (intentional):
+#   .kiro/          ← Kiro spec files (requirements, design, tasks, steering)
+#   PoltergeistDebugger/   ← All Swift source files
+#   README.md, LICENSE, .gitignore
+# =============================================================================

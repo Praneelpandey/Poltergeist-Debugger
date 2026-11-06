@@ -4,42 +4,28 @@ import ARKit
 
 // MARK: - ContentView
 
-/// Root SwiftUI scene. Owns the RealityView, HUD overlay, and all
-/// lifecycle wiring (AR session, persistence, scene phase).
+/// Root SwiftUI scene. Owns the RealityView, HUD overlay, and all lifecycle
+/// wiring (AR session, gestures, persistence, scene phase).
 ///
 /// ## AR setup strategy (Task 2.4, Req 2.5)
-/// We do NOT access content.session inside RealityView — that property does
-/// not exist on RealityViewCameraContent on iOS. Instead:
-///
-/// On device (ARWorldTrackingConfiguration.isSupported == true):
-///   AnchorEntity(.plane(.horizontal, classification: .any,
-///                       minimumBounds: SIMD2(0.3, 0.3)))
-///   This tells RealityKit to wait for a real horizontal plane ≥ 0.3×0.3 m
-///   (~0.09 m²) before making the anchor active (Req 1.3).
-///   We subscribe to SceneEvents.AnchoredStateChanged to detect the moment
-///   the anchor becomes active and transition sessionPhase → .playing (Req 1.7).
-///
-/// On Simulator (isSupported == false):
-///   AnchorEntity(world: .zero) — immediate placement, no plane scan needed.
-///   sessionPhase is set to .playing in the make: closure directly.
+/// content.session does NOT exist on RealityViewCameraContent on iOS.
+/// We use AnchorEntity(.plane(...)) with a minimumBounds that satisfies the
+/// ≥ 0.09 m² requirement (0.3 × 0.3 = 0.09), and subscribe to
+/// SceneEvents.AnchoredStateChanged to detect plane acquisition (Req 1.7).
+/// On Simulator, AnchorEntity(world: .zero) is used as a drop-in replacement.
 struct ContentView: View {
 
-    // Shared observable state — injected into HUDView and RealityView update:.
-    @State private var gameLoopState = GameLoopState()
-
-    // Tracks ARKit tracking interruption for the HUD recovery banner (Req 1.8).
+    @State private var gameLoopState    = GameLoopState()
     @State private var isTrackingInterrupted = false
+    @State private var showSaveError    = false
 
-    // Save-failure flag — surfaced to player within 3 s (Req 11.7).
-    @State private var showSaveError = false
+    // DragHandler owns gesture-to-entity translation (Task 7.1).
+    @State private var dragHandler      = DragHandler()
 
     @Environment(\.scenePhase) private var scenePhase
 
-    // EventSubscription must be held alive for the subscription to remain active.
+    // Held alive so the AnchoredStateChanged subscription stays active.
     @State private var anchorSubscription: EventSubscription? = nil
-
-    // The ARSessionCoordinator stays alive for the session lifetime.
-    @State private var arCoordinator = ARSessionCoordinator()
 
     var body: some View {
         ZStack {
@@ -48,11 +34,9 @@ struct ContentView: View {
                     isTrackingInterrupted: isTrackingInterrupted)
         }
         .ignoresSafeArea()
-        // Save on background (Req 11.1)
         .onChange(of: scenePhase) { _, newPhase in
             handleScenePhase(newPhase)
         }
-        // Save-failure alert (Req 11.7)
         .alert("Save Failed", isPresented: $showSaveError) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -60,20 +44,16 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - RealityView
+    // MARK: - RealityView + gestures
 
     private var arView: some View {
         RealityView { content in
-            // ── make: runs once on a background task, then the result is
-            //    applied to the scene on @MainActor. ──────────────────────
+            // make: runs once (background task → applied on @MainActor).
 
             let motherboard = PuzzleFactory.makeMotherboard()
 
             if ARWorldTrackingConfiguration.isSupported {
-                // Device path: use a plane-detection anchor (Req 1.2, 1.3).
-                // minimumBounds SIMD2(0.3, 0.3) means RealityKit waits for a
-                // plane at least 0.3 m × 0.3 m before activating this anchor,
-                // satisfying the ≥ 0.09 m² requirement (0.3 × 0.3 = 0.09 m²).
+                // Device: wait for a horizontal plane ≥ 0.3 × 0.3 m (Req 1.2, 1.3).
                 let planeAnchor = AnchorEntity(
                     .plane(.horizontal,
                            classification: .any,
@@ -82,59 +62,71 @@ struct ContentView: View {
                 planeAnchor.addChild(motherboard)
                 content.add(planeAnchor)
 
-                // Subscribe to anchor activation. When this anchor becomes
-                // active it means a qualifying plane has been found and the
-                // Motherboard is placed — transition to .playing (Req 1.7).
-                // The subscription is stored in @State so it stays alive.
+                // Subscribe to plane acquisition / loss (Req 1.7, 1.8).
                 anchorSubscription = content.subscribe(
                     to: SceneEvents.AnchoredStateChanged.self,
                     on: planeAnchor
-                ) { [weak planeAnchor] event in
-                    // This closure fires on @MainActor in RealityKit iOS 17+.
-                    guard event.isAnchored else {
-                        // Anchor lost after being established → interruption.
+                ) { event in
+                    if event.isAnchored {
+                        isTrackingInterrupted = false
+                        if gameLoopState.sessionPhase == .scanning {
+                            gameLoopState.sessionPhase = .playing
+                        }
+                    } else {
                         if gameLoopState.sessionPhase == .playing ||
                            gameLoopState.sessionPhase == .victory {
                             isTrackingInterrupted = true
                         }
-                        return
-                    }
-                    // Anchor became active.
-                    isTrackingInterrupted = false
-                    if gameLoopState.sessionPhase == .scanning {
-                        gameLoopState.sessionPhase = .playing
                     }
                 }
 
             } else {
-                // Simulator / unsupported device path (Req 2.5, Steering §3.7).
+                // Simulator / no ARKit: world-origin anchor (Req 2.5).
                 let worldAnchor = SimulatorFallback.makeWorldAnchor()
                 worldAnchor.addChild(motherboard)
                 content.add(worldAnchor)
-
-                // No plane detection needed — go straight to playing.
                 gameLoopState.sessionPhase = .playing
             }
 
         } update: { _ in
-            // ── update: runs every frame on @MainActor ───────────────────
-            // Drain ECS events and update GameLoopState (Req 3.7).
+            // update: runs every frame on @MainActor.
             gameLoopState.processEvents()
         }
+        // ── Gesture wiring (Task 7.2, Req 4.1, 4.2, Steering §4) ────────
+        // Gestures are attached to the RealityView directly, not a parent
+        // container. targetedToAnyEntity() hit-tests against all entities
+        // that have InputTargetComponent + CollisionComponent.
+        .gesture(
+            DragGesture()
+                .targetedToAnyEntity()
+                .onChanged { value in
+                    dragHandler.handleChanged(value)
+                }
+                .onEnded { value in
+                    dragHandler.handleEnded(value)
+                }
+        )
+        .gesture(
+            // SpatialTapGesture for future tap-to-select interactions (Req 4.2).
+            // Phase 2 leaves the handler empty; Phase 3 wires puzzle-specific tap logic.
+            SpatialTapGesture()
+                .targetedToAnyEntity()
+                .onEnded { _ in
+                    // Phase 3: handle tap-to-select for non-draggable interactions.
+                }
+        )
     }
 
-    // MARK: - Scene phase lifecycle
+    // MARK: - Scene phase lifecycle (persistence)
 
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
 
         case .background:
-            // Save within 2 s of backgrounding (Req 11.1).
-            // Entity transform snapshots are omitted in Phase 1 (no puzzle entities yet);
-            // Phase 2+ will pass real snapshots here.
+            // Snapshot and save within 2 s of backgrounding (Req 11.1).
             let snapshot = PersistedGameState(
                 from: gameLoopState,
-                entitySnapshots: [:]
+                entitySnapshots: [:]   // Phase 2+: collect real transform snapshots
             )
             Task {
                 do {
@@ -145,7 +137,7 @@ struct ContentView: View {
             }
 
         case .active:
-            // Restore persisted state before the first frame (Req 11.2).
+            // Restore before first frame (Req 11.2).
             Task {
                 if let saved = await GameStatePersistence.shared.load() {
                     await GameStatePersistence.restore(saved, into: gameLoopState)
